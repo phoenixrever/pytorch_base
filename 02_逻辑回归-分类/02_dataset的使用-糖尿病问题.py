@@ -51,7 +51,7 @@ class DiabetesDataset(Dataset):
  print(os.getcwd())
  获取脚本所在目录 __file__ REPL 下不可用
 '''
-script_dir = os.path.dirname(os.path.abspath(__file__))
+script_dir = os.path.dirname(os.path.abspath(__file__))  # 获取脚本所在目录
 diabetes_path = os.path.join(script_dir, "data/diabetes.csv.gz")
 
 dataset = DiabetesDataset(diabetes_path)
@@ -100,9 +100,21 @@ class Model(torch.nn.Module):
 model = Model()
 
 # 定义损失函数（二元交叉熵损失）
+'''
+  定义损失函数（均方误差 MSE），使用 sum 进行累加 y hat -y 求平方，再把所有值加起来 MSELoss也是继承自Modul
+  如果 loss.backward()，PyTorch 会根据计算图自动计算梯度，不需要手动求导。
+  
+  - **`reduction='mean'`（默认）** → **计算均值**（推荐，适用于标准梯度下降）。
+  - **`reduction='sum'`** → **计算总和**（适用于 batch 大小变化时保持权重一致）。
+  - **`reduction='none'`** → **不聚合，返回逐元素损失值**（适用于自定义损失计算）。
+'''
 criterion = torch.nn.BCELoss()
 
+
 # 定义优化器（随机梯度下降）
+# 定义优化器（替代手动更新 w）
+# torch.optim.SGD 是 PyTorch 提供的随机梯度下降（SGD, Stochastic Gradient Descent）优化器。
+# 它用于自动更新模型的参数，避免我们手动计算 w -= 0.01 * w.grad 这样的操作。
 optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
 # 训练模型 if __name__ == '__main__':  windows下 num_workers 多进程 会出错
