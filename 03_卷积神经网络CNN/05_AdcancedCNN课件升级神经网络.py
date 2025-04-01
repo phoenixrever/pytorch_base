@@ -6,94 +6,157 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-'''
-这个例子不太好 不清晰 还是看下面的主流例子
-'''
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# 定义 InceptionA 模块
+
+"""
+为什么这样设计？
+
+1x1 卷积：减少计算量，同时用于提取低级特征。
+
+5x5 卷积：用于捕捉更大范围的信息，但计算开销较大，所以先用 1x1 降维。
+
+两层 3x3 代替 5x5：相比于 5x5，两个 3x3 卷积能提取更丰富的特征，并且计算量更低。
+
+池化层分支：用于获取全局特征，提高模型的鲁棒性。
 
 
-class Net(torch.nn.Module):
-    """
-    定义一个简单的卷积神经网络
-    继承自torch.nn.Module基类，是所有神经网络模块的基类
-    """
 
-    def __init__(self):
-        """
-        初始化网络结构
-        在这里定义网络的各个层
-        """
-        # 调用父类的初始化方法，这一步是必须的
-        super(Net, self).__init__()
+为什么 Inception 适合这个任务？
+不同尺度的特征提取：
 
-        # 第一个卷积层：
-        # 输入通道数=1（灰度图像）
-        # 输出通道数=10（10个不同的特征图）
-        # kernel_size=5（5x5的卷积核）
-        # 对于MNIST数据集(28x28)，卷积后的尺寸变为(28-5+1)x(28-5+1) = 24x24
-        self.conv1 = torch.nn.Conv2d(1, 10, kernel_size=5)
+  1x1、3x3、5x5 的组合可以同时捕获局部和全局信息，提高模型的泛化能力。
 
-        # 第二个卷积层：
-        # 输入通道数=10（来自conv1的输出）
-        # 输出通道数=20（20个不同的特征图）
-        # kernel_size=5（5x5的卷积核）
-        # 在经过第一次池化后尺寸为12x12，卷积后变为(12-5+1)x(12-5+1) = 8x8
-        self.conv2 = torch.nn.Conv2d(10, 20, kernel_size=5)
+计算效率优化：
 
-        # 最大池化层：
-        # kernel_size=2（2x2的池化窗口）
-        # 作用：将特征图的尺寸减半，同时保留最重要的特征
-        # 每次执行后，特征图的高度和宽度都减半
-        self.pooling = torch.nn.MaxPool2d(2)
+  1x1 卷积降维降低计算量。
 
-        # 全连接层：
-        # 输入特征数=320（计算方法：20个通道 × 4×4的特征图 = 320）
-        # 输出特征数=10（对应10个数字类别）
-        # 对应的维度变换过程如下所示：
-        # 𝑘𝑒𝑟𝑛𝑒𝑙 = 2 × 2
-        # (𝑏𝑎𝑡𝑐ℎ, 20, 8, 8) → 经过池化 → (𝑏𝑎𝑡𝑐ℎ, 20, 4, 4) → 展平 → (𝑏𝑎𝑡𝑐ℎ, 320)
-        self.fc = torch.nn.Linear(320, 10)
+  3x3+3x3 代替 5x5 进一步减少计算成本。
+
+提升模型的表达能力：
+
+  每个输入都会经过多个分支，不同分支提取的信息互补，提高特征表示能力。
+
+
+
+"""
+
+
+class InceptionA(nn.Module):
+    def __init__(self, in_channels):
+        super(InceptionA, self).__init__()
+
+        # 1x1 卷积分支（用于降维和提取局部特征）
+        self.branch1x1 = nn.Conv2d(in_channels, 16, kernel_size=1)
+
+        # 5x5 卷积分支（先 1x1 降维，再 5x5 提取特征）
+        self.branch5x5_1 = nn.Conv2d(in_channels, 16, kernel_size=1)  # 先用1x1降维
+        self.branch5x5_2 = nn.Conv2d(16, 24, kernel_size=5, padding=2)  # 5x5提取较大范围特征
+
+        # 3x3 双层卷积分支（使用两层 3x3 卷积代替 5x5，减少计算量）
+        self.branch3x3_1 = nn.Conv2d(in_channels, 16, kernel_size=1)  # 先用1x1降维
+        self.branch3x3_2 = nn.Conv2d(16, 24, kernel_size=3, padding=1)  # 3x3 提取局部特征
+        self.branch3x3_3 = nn.Conv2d(24, 24, kernel_size=3, padding=1)  # 继续 3x3 进一步提取信息
+
+        # 池化 + 1x1 卷积分支 （用于全局信息）
+        self.branch_pool = nn.Conv2d(in_channels, 24, kernel_size=1)
 
     def forward(self, x):
-        """
-        定义前向传播路径
-        参数x是输入数据
-        """
-        # 获取当前批次的样本数量
-        # x的形状为[batch_size, channels, height, width]
-        '''
-            labels.size(0) 获取 labels 张量的第 0 维的大小，也就是 batch_size。
-            labels = torch.tensor([1, 2, 0, 1, 2, 1, 0, 2, ...])  # 共 64 个元素
-            print(labels.size(0))  # 输出: 64
-        '''
-        batch_size = x.size(0)
+        # 1x1 分支
+        branch1x1 = self.branch1x1(x)
 
-        # 第一个卷积块：卷积+池化+ReLU激活
-        # 输入：(batch, 1, 28, 28)，即原始图像
-        # 卷积后：(batch, 10, 24, 24)
-        # 池化后：(batch, 10, 12, 12)
-        # ReLU后保持形状不变，但激活了非线性特性
-        x = F.relu(self.pooling(self.conv1(x)))
+        # 5x5 分支
+        branch5x5 = self.branch5x5_1(x)
+        branch5x5 = self.branch5x5_2(branch5x5)
 
-        # 第二个卷积块：卷积+池化+ReLU激活
-        # 输入：(batch, 10, 12, 12)
-        # 卷积后：(batch, 20, 8, 8)
-        # 池化后：(batch, 20, 4, 4)
-        # ReLU后形状不变
-        x = F.relu(self.pooling(self.conv2(x)))
+        # 3x3 分支
+        branch3x3 = self.branch3x3_1(x)
+        branch3x3 = self.branch3x3_2(branch3x3)
+        branch3x3 = self.branch3x3_3(branch3x3)
 
-        # 展平操作，将3D特征图转为1D向量
-        # 输入：(batch, 20, 4, 4)
-        # 输出：(batch, 320)
-        # -1表示自动计算该维度的大小，保持元素总数不变
-        x = x.view(batch_size, -1)  # flatten
+        # 平均池化 + 1x1 分支
+        branch_pool = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
+        branch_pool = self.branch_pool(branch_pool)
 
-        # 全连接层，进行最终分类
-        # 输入：(batch, 320)
-        # 输出：(batch, 10)，对应10个类别的得分
+        # 拼接所有分支的输出（通道维度 dim=1）
+        outputs = [branch1x1, branch5x5, branch3x3, branch_pool]
+        return torch.cat(outputs, dim=1)
+
+# 定义整个网络
+
+
+"""
+为什么这样设计？
+
+卷积层提取特征：
+
+  conv1 提取基础特征，生成 10 个特征图。
+
+  conv2 进一步提取特征，并进入 Inception 结构。
+
+InceptionA 增强特征表达：
+
+  incep1 通过多个分支并行提取不同尺度的特征，并输出 88 通道（16+24+24+24）。
+
+  incep2 进一步提取特征，提高模型的能力。
+
+池化层降维：  
+
+  self.mp 通过最大池化减少特征图的大小，降低计算成本，并保留主要特征。
+
+全连接层进行分类：
+
+  self.fc 作用是将 1408 维的特征映射到最终的 10 类分类任务上。
+"""
+
+
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+
+        # 第一层卷积（输入通道为 1，输出通道为 10）
+        self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
+
+        # 第一个 InceptionA 模块，输入通道为 10
+        self.incep1 = InceptionA(in_channels=10)
+
+        # 第二层卷积（需要匹配前一层的输出通道）
+        self.conv2 = nn.Conv2d(88, 20, kernel_size=5)  # InceptionA 输出通道数为 88（16+24+24+24）
+
+        # 第二个 InceptionA 模块，输入通道为 20
+        self.incep2 = InceptionA(in_channels=20)
+
+        # 最大池化层
+        self.mp = nn.MaxPool2d(2)
+
+        # 全连接层（1408 需要根据实际输入尺寸调整）
+        self.fc = nn.Linear(1408, 10)
+
+    def forward(self, x):
+        in_size = x.size(0)  # 获取 batch size
+
+        # 第一层卷积 + ReLU + 最大池化
+        x = F.relu(self.mp(self.conv1(x)))
+
+        # 第一个 InceptionA
+        x = self.incep1(x)
+
+        # 第二层卷积 + ReLU + 最大池化
+        x = F.relu(self.mp(self.conv2(x)))
+
+        # 第二个 InceptionA
+        x = self.incep2(x)
+
+        # 展平为全连接层输入
+        x = x.view(in_size, -1)
+
+        # 全连接层分类
         x = self.fc(x)
 
-        # 返回最终输出
-        # 注意：通常不在这里应用softmax，因为交叉熵损失函数会在内部处理
         return x
 
 
@@ -122,7 +185,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 # 设置计算设备
 # 如果有GPU（cuda:0）则使用GPU，否则使用CPU
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-# 应该在这里添加：model = model.to(device)，将模型移至指定设备
+model = model.to(device)  # 将模型移至指定设备
 
 
 def train(epoch):
@@ -223,5 +286,4 @@ def test():
 
 for epoch in range(10):
     train(epoch)
-
-test()
+    test()
