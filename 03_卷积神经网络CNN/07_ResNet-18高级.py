@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# 此章节为课件的生产化写法
+
 
 class ResidualBlock(nn.Module):
     """
